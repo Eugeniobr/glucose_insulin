@@ -1,45 +1,53 @@
 services:
-  mongodb:
-    image: mongo:4.4
-    networks:
-      - cgm_network
+  pipeline:
+    build: .
+    container_name: glucose_pipeline
+    command: ["python3", "main.py", "loop", "--skip-extract"]
+    env_file:
+      - .env
+    environment:
+      - TZ=${TZ:-America/Sao_Paulo}
     volumes:
-      - mongo_data:/data/db
-    restart: always
+      - outputs_data:/app/outputs
+      - ./dados_glicose_final.json:/app/dados_glicose_final.json
+    restart: unless-stopped
 
-  nightscout:
-    image: nightscout/cgm-remote-monitor:latest
-    networks:
-      - cgm_network
+  dashboard:
+    build: .
+    container_name: glucose_dashboard
+    command: ["python3", "dashboard_server.py", "--host", "0.0.0.0", "--port", "8000", "--skip-extract", "--no-background-pipeline"]
+    env_file:
+      - .env
+    environment:
+      - TZ=${TZ:-America/Sao_Paulo}
+    volumes:
+      - outputs_data:/app/outputs
+      - ./dados_glicose_final.json:/app/dados_glicose_final.json
     ports:
-      - "1337:1337"
+      - "8000:8000"
     depends_on:
-      - mongodb
-    environment:
-      - MONGODB_URI=mongodb://mongodb:27017/nightscout
-      - API_SECRET=minhasenha123  # Escolha uma senha
-      - DISPLAY_UNITS=mg/dl
-      - ENABLE=careportal food bwp speech
-    restart: always
+      - pipeline
+    restart: unless-stopped
 
-  llu_sync:
-    image: dgtlmoon/librelinkup-nightscout-sync:latest # Imagem alternativa estável
-    networks:
-      - cgm_network
+  telegram_bot:
+    build: .
+    container_name: glucose_telegram_bot
+    command: ["python3", "telegram_ai_bot.py"]
+    env_file:
+      - .env
+    environment:
+      - TZ=${TZ:-America/Sao_Paulo}
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - outputs_data:/app/outputs
+      - ./dados_glicose_final.json:/app/dados_glicose_final.json
     depends_on:
-      - nightscout
-    environment:
-      - LLU_USER=malusrezende55@gmail.com
-      - LLU_PASSWORD=lululaeug5524
-      - LLU_REGION=la
-      - NS_URL=http://nightscout:1337
-      - NS_API_SECRET=minhasenha123
-      - TIMEZONE=America/Sao_Paulo
-    restart: always
-
-networks:
-  cgm_network:
-    driver: bridge
+      - pipeline
+    restart: unless-stopped
 
 volumes:
-  mongo_data:
+  outputs_data:

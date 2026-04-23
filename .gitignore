@@ -7,6 +7,7 @@ __pycache__/
 # Env / secrets
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 
@@ -18,8 +19,12 @@ outputs/
 *.jpg
 *.jpeg
 *.pdf
+docs/
+package-lock.json
 
 # OS / editor
 .DS_Store
 .vscode/
 .idea/
+.codex
+dados_glicose_final.json
