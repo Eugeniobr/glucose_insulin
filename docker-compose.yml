@@ -1,0 +1,45 @@
+services:
+  mongodb:
+    image: mongo:4.4
+    networks:
+      - cgm_network
+    volumes:
+      - mongo_data:/data/db
+    restart: always
+
+  nightscout:
+    image: nightscout/cgm-remote-monitor:latest
+    networks:
+      - cgm_network
+    ports:
+      - "1337:1337"
+    depends_on:
+      - mongodb
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/nightscout
+      - API_SECRET=minhasenha123  # Escolha uma senha
+      - DISPLAY_UNITS=mg/dl
+      - ENABLE=careportal food bwp speech
+    restart: always
+
+  llu_sync:
+    image: dgtlmoon/librelinkup-nightscout-sync:latest # Imagem alternativa estável
+    networks:
+      - cgm_network
+    depends_on:
+      - nightscout
+    environment:
+      - LLU_USER=malusrezende55@gmail.com
+      - LLU_PASSWORD=lululaeug5524
+      - LLU_REGION=la
+      - NS_URL=http://nightscout:1337
+      - NS_API_SECRET=minhasenha123
+      - TIMEZONE=America/Sao_Paulo
+    restart: always
+
+networks:
+  cgm_network:
+    driver: bridge
+
+volumes:
+  mongo_data:

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dashboard Glicose-Insulina</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Monitoramento em tempo real</p>
+          <h1>Dashboard Glicose-Insulina</h1>
+          <p class="subtitle">Atualização automática dos outputs do pipeline e recarga visual contínua.</p>
+        </div>
+        <div class="status-panel">
+          <span class="status-dot" id="status-dot"></span>
+          <div>
+            <p class="label">Última atualização</p>
+            <strong id="generated-at">carregando...</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="cards" id="metric-cards">
+        <article class="card">
+          <p class="label">RMSE</p>
+          <strong id="rmse">--</strong>
+        </article>
+        <article class="card">
+          <p class="label">MAE</p>
+          <strong id="mae">--</strong>
+        </article>
+        <article class="card">
+          <p class="label">Última glicose</p>
+          <strong id="latest-glucose">--</strong>
+        </article>
+        <article class="card">
+          <p class="label">Simples +2h</p>
+          <strong id="forecast-glucose">--</strong>
+        </article>
+        <article class="card">
+          <p class="label">TS+ML +1h</p>
+          <strong id="hybrid-forecast-glucose">--</strong>
+        </article>
+        <article class="card">
+          <p class="label">Fonte +2h</p>
+          <strong id="forecast-delta-now">--</strong>
+        </article>
+        <article class="card">
+          <p class="label">Entradas</p>
+          <strong id="inputs-count">--</strong>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="panel panel-wide">
+          <div class="panel-header">
+            <div>
+              <p class="label">Comparação</p>
+              <h2>Série observada, forward e projeção de 2 horas</h2>
+            </div>
+            <button id="refresh-btn" class="ghost-button">Atualizar agora</button>
+          </div>
+          <svg id="glucose-chart" viewBox="0 0 900 320" preserveAspectRatio="none"></svg>
+          <div id="chart-axis" class="axis-labels"></div>
+          <div class="legend">
+            <span><i class="legend-dot observed"></i> Observado</span>
+            <span><i class="legend-dot simulated"></i> Forward histórico</span>
+            <span><i class="legend-dot simple"></i> Previsões simples</span>
+            <span><i class="legend-dot hybrid"></i> Projeções TS+ML</span>
+          </div>
+        </article>
+
+        <article class="panel panel-wide">
+          <div class="panel-header">
+            <div>
+              <p class="label">Histórico de projeções</p>
+              <h2>Diferença entre projeção futura e observado nas últimas 2 horas</h2>
+            </div>
+          </div>
+          <svg id="forecast-delta-chart" viewBox="0 0 900 260" preserveAspectRatio="none"></svg>
+          <div id="forecast-delta-axis" class="axis-labels"></div>
+          <div class="legend">
+            <span><i class="legend-dot delta"></i> Projeção - observado</span>
+          </div>
+        </article>
+
+        <article class="panel panel-wide">
+          <div class="panel-header">
+            <div>
+              <p class="label">Pesquisa</p>
+              <h2>Reconstrução Takagi-Sugeno dinâmica</h2>
+            </div>
+          </div>
+          <svg id="ts-dynamic-chart" viewBox="0 0 900 280" preserveAspectRatio="none"></svg>
+          <div id="ts-dynamic-axis" class="axis-labels"></div>
+          <div class="legend">
+            <span><i class="legend-dot observed"></i> Observado</span>
+            <span><i class="legend-dot hybrid"></i> Takagi-Sugeno dinâmico</span>
+            <span><i class="legend-dot simple"></i> Takagi-Sugeno + ML</span>
+          </div>
+          <div id="ts-dynamic-summary" class="prototype-summary"></div>
+        </article>
+
+        <article class="panel">
+          <p class="label">Estados e parâmetros</p>
+          <h2>Resumo do modelo</h2>
+          <dl class="summary" id="state-summary"></dl>
+        </article>
+
+        <article class="panel">
+          <p class="label">Entradas manuais</p>
+          <h2>Últimos eventos</h2>
+          <div id="events-summary" class="events"></div>
+        </article>
+
+        <article class="panel">
+          <p class="label">Calculadora</p>
+          <h2>Dose sugerida (múltiplos de 10 g CHO)</h2>
+          <div class="dose-grid">
+            <label>CHO (g)
+              <input id="dose-cho" type="number" min="0" max="300" step="10" value="0">
+            </label>
+            <label>Glicemia (mg/dL)
+              <input id="dose-glucose" type="number" min="40" max="450" step="1" value="140">
+            </label>
+            <label>Sensibilidade (U/g)
+              <input id="dose-sensitivity" type="number" min="0.01" max="0.30" step="0.005" value="0.10">
+            </label>
+          </div>
+          <div id="dose-summary" class="dose-summary"></div>
+        </article>
+
+        <article class="panel panel-wide">
+          <p class="label">Plot salvo pelo pipeline</p>
+          <h2>Saída gráfica</h2>
+          <img id="pipeline-plot" alt="Plot do pipeline">
+        </article>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+  </html>

@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Env / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Data / artifacts
+outputs/
+*.csv
+*.ipynb
+*.png
+*.jpg
+*.jpeg
+*.pdf
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
