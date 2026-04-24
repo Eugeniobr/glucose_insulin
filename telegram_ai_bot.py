@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--offset-path", default="outputs/telegram_ai_offset.json")
     parser.add_argument("--manual-meals-csv", default="outputs/telegram_manual_meals.csv")
     parser.add_argument("--manual-insulin-csv", default="outputs/telegram_manual_insulin.csv")
+    parser.add_argument(
+        "--food-table-path",
+        default=os.getenv("FOOD_GI_TABLE_PATH", "").strip(),
+        help="CSV/JSON com tabela de alimentos e índice glicêmico",
+    )
     parser.add_argument("--allowed-chat-id", default=os.getenv("TELEGRAM_CHAT_ID", "").strip())
     parser.add_argument("--dry-run", action="store_true", help="Não envia para Telegram, apenas imprime")
     return parser
@@ -56,6 +62,318 @@ def _read_json(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
+
+
+def _norm_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value or "")
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    normalized = normalized.lower()
+    normalized = re.sub(r"[^a-z0-9\s]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _parse_float(raw: Any) -> float | None:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    text = text.replace(",", ".")
+    m = re.search(r"-?[0-9]+(?:\.[0-9]+)?", text)
+    if not m:
+        return None
+    try:
+        return float(m.group(0))
+    except ValueError:
+        return None
+
+
+def _pick_field(row: dict[str, Any], aliases: list[str]) -> Any:
+    normalized = {_norm_text(key): value for key, value in row.items()}
+    for alias in aliases:
+        val = normalized.get(_norm_text(alias))
+        if val is None:
+            continue
+        if str(val).strip() == "":
+            continue
+        return val
+    return None
+
+
+def _extract_amount_g(raw_food_text: str) -> tuple[str, float | None]:
+    text = (raw_food_text or "").strip()
+    m = re.search(r"([0-9]+(?:[.,][0-9]+)?)\s*(?:g|gramas?)\b", text, flags=re.IGNORECASE)
+    if not m:
+        return text, None
+    grams = float(m.group(1).replace(",", "."))
+    cleaned = (text[: m.start()] + " " + text[m.end() :]).strip()
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned, grams
+
+
+def _extract_pdf_rows(path: Path) -> list[dict[str, Any]]:
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except Exception as exc:
+        raise RuntimeError("Dependência ausente: pypdf") from exc
+
+    reader = PdfReader(str(path))
+    rows: list[dict[str, Any]] = []
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        for line in text.splitlines():
+            clean = re.sub(r"\s{2,}", " ", line).strip(" -\t")
+            if not clean:
+                continue
+            low = _norm_text(clean)
+            if low in {"alimento", "ig", "cg", "indice glicemico", "carga glicemica"}:
+                continue
+            if len(clean) < 4:
+                continue
+            # Heurística: linha de tabela com alimento + IG (inteiro 10-130).
+            m = re.match(r"^(.+?)\s+([0-9]{1,3})(?:\s+([0-9]{1,3}(?:[.,][0-9]+)?))?$", clean)
+            if not m:
+                continue
+            food = m.group(1).strip(" -;:")
+            if not food or len(food) < 2:
+                continue
+            gi = float(m.group(2))
+            if gi < 10 or gi > 130:
+                continue
+            cg_val = _parse_float(m.group(3)) if m.group(3) else None
+            rows.append(
+                {
+                    "alimento": food,
+                    "ig": gi,
+                    "cg": cg_val,
+                }
+            )
+    return rows
+
+
+def _load_food_table(base_dir: Path, configured_path: str) -> dict[str, Any]:
+    candidates: list[Path] = []
+    if configured_path:
+        p = Path(configured_path)
+        candidates.append(p if p.is_absolute() else (base_dir / p))
+    else:
+        candidates.extend(
+            [
+                base_dir / "food_gi_table.csv",
+                base_dir / "food_gi_table.json",
+                base_dir / "food_gi_table.pdf",
+                base_dir / "foods_gi.csv",
+                base_dir / "foods_gi.json",
+                base_dir / "foods_gi.pdf",
+                base_dir / "indice_glicemico.csv",
+                base_dir / "indice_glicemico.json",
+                base_dir / "indice_glicemico.pdf",
+                base_dir / "tabela_indice_glicemico.csv",
+                base_dir / "tabela_indice_glicemico.json",
+                base_dir / "tabela_indice_glicemico.pdf",
+                base_dir / "outputs/food_gi_table.csv",
+                base_dir / "outputs/food_gi_table.json",
+                base_dir / "outputs/food_gi_table.pdf",
+            ]
+        )
+        for cand in base_dir.glob("*"):
+            if not cand.is_file():
+                continue
+            if cand.suffix.lower() not in {".csv", ".json", ".pdf"}:
+                continue
+            if re.search(r"(ig|indice|glicem|glyc|food|alimento)", cand.name, flags=re.IGNORECASE):
+                candidates.append(cand)
+
+    path: Path | None = None
+    for cand in candidates:
+        if cand.exists() and cand.is_file():
+            path = cand.resolve()
+            break
+    if path is None:
+        return {
+            "path": "",
+            "entries": [],
+            "status": "missing",
+            "message": "Tabela de alimentos/IG não encontrada",
+        }
+
+    try:
+        rows: list[dict[str, Any]]
+        if path.suffix.lower() == ".json":
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, list):
+                raise ValueError("JSON precisa ser lista de objetos")
+            rows = [row for row in payload if isinstance(row, dict)]
+        elif path.suffix.lower() == ".pdf":
+            rows = _extract_pdf_rows(path)
+        else:
+            with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+    except Exception as exc:
+        return {
+            "path": str(path),
+            "entries": [],
+            "status": "error",
+            "message": f"Falha ao ler tabela: {exc}",
+        }
+
+    entries: list[dict[str, Any]] = []
+    for row in rows:
+        food_name_raw = _pick_field(
+            row,
+            [
+                "alimento",
+                "food",
+                "nome",
+                "item",
+                "descricao",
+                "descrição",
+            ],
+        )
+        if food_name_raw is None:
+            continue
+        food_name = str(food_name_raw).strip()
+        if not food_name:
+            continue
+        gi = _parse_float(
+            _pick_field(
+                row,
+                [
+                    "ig",
+                    "gi",
+                    "indice_glicemico",
+                    "índice_glicêmico",
+                    "indice glicemico",
+                    "glycemic_index",
+                ],
+            )
+        )
+        glycemic_load = _parse_float(
+            _pick_field(
+                row,
+                [
+                    "cg",
+                    "carga_glicemica",
+                    "carga glicemica",
+                    "glycemic_load",
+                ],
+            )
+        )
+        carbs_per_portion = _parse_float(
+            _pick_field(
+                row,
+                [
+                    "cho_g",
+                    "carboidratos_g",
+                    "carboidratos (g)",
+                    "carbs_g",
+                    "carboidratos",
+                    "carbs",
+                ],
+            )
+        )
+        if carbs_per_portion is None and glycemic_load is not None and gi is not None and gi > 0:
+            carbs_per_portion = max(0.0, float(glycemic_load) * 100.0 / float(gi))
+        carbs_per_100g = _parse_float(
+            _pick_field(
+                row,
+                [
+                    "cho_100g",
+                    "carboidratos_100g",
+                    "carbs_100g",
+                ],
+            )
+        )
+        portion_g = _parse_float(
+            _pick_field(
+                row,
+                [
+                    "porcao_g",
+                    "porção_g",
+                    "porcao",
+                    "porção",
+                    "serving_g",
+                    "gramas_por_porcao",
+                ],
+            )
+        )
+        entries.append(
+            {
+                "food_name": food_name,
+                "norm_name": _norm_text(food_name),
+                "gi": gi,
+                "glycemic_load": glycemic_load,
+                "carbs_per_portion_g": carbs_per_portion,
+                "carbs_per_100g": carbs_per_100g,
+                "portion_g": portion_g,
+            }
+        )
+
+    if not entries:
+        return {
+            "path": str(path),
+            "entries": [],
+            "status": "empty",
+            "message": "Tabela sem linhas válidas (coluna alimento obrigatória).",
+        }
+
+    return {
+        "path": str(path),
+        "entries": entries,
+        "status": "ok",
+        "message": f"Tabela carregada com {len(entries)} alimentos.",
+    }
+
+
+def _lookup_food(food_query: str, table: dict[str, Any]) -> dict[str, Any] | None:
+    entries = table.get("entries") or []
+    if not entries:
+        return None
+    q = _norm_text(food_query)
+    if not q:
+        return None
+
+    exact = [entry for entry in entries if entry["norm_name"] == q]
+    if exact:
+        return exact[0]
+    starts = [entry for entry in entries if entry["norm_name"].startswith(q)]
+    if starts:
+        return starts[0]
+    contains = [entry for entry in entries if q in entry["norm_name"]]
+    if contains:
+        return contains[0]
+
+    q_tokens = set(q.split())
+    best_entry: dict[str, Any] | None = None
+    best_score = 0
+    for entry in entries:
+        score = len(q_tokens.intersection(set(entry["norm_name"].split())))
+        if score > best_score:
+            best_score = score
+            best_entry = entry
+    if best_score > 0:
+        return best_entry
+    return None
+
+
+def _estimate_carbs_from_entry(entry: dict[str, Any], grams: float | None) -> float | None:
+    carbs_100 = entry.get("carbs_per_100g")
+    carbs_portion = entry.get("carbs_per_portion_g")
+    portion_g = entry.get("portion_g")
+    if grams is not None:
+        if carbs_100 is not None:
+            return max(0.0, float(carbs_100) * float(grams) / 100.0)
+        if carbs_portion is not None and portion_g:
+            return max(0.0, float(carbs_portion) * float(grams) / float(portion_g))
+    if carbs_portion is not None:
+        return max(0.0, float(carbs_portion))
+    return None
+
+
+def _gi_impact_factor(gi: float | None) -> float:
+    if gi is None:
+        return 1.0
+    return max(0.85, min(1.20, 1.0 + (float(gi) - 55.0) * 0.004))
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -513,6 +831,38 @@ def _parse_command(text: str) -> dict[str, Any]:
     if low in {"grafico ts", "gráfico ts", "plot ts", "grafico reconstrucao", "gráfico reconstrução"}:
         return {"type": "plot_ts"}
 
+    m_food_lookup = re.search(r"^(?:buscar\s+)?alimento\s+(.+)$", raw, flags=re.IGNORECASE)
+    if m_food_lookup:
+        return {"type": "food_lookup", "food_query": m_food_lookup.group(1).strip()}
+
+    m_add_food = re.search(r"^(?:registrar|add)\s+alimento\s+(.+)$", raw, flags=re.IGNORECASE)
+    if m_add_food:
+        return {"type": "add_food", "food_query": m_add_food.group(1).strip()}
+
+    m_dose_food_glucose = re.search(
+        r"^dose\s+alimento\s+(.+?)\s+glicemia\s*=?\s*([0-9]+(?:[.,][0-9]+)?)(?:\s+sens\s*=?\s*([0-9]+(?:[.,][0-9]+)?))?$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if m_dose_food_glucose:
+        return {
+            "type": "dose_food",
+            "food_query": m_dose_food_glucose.group(1).strip(),
+            "glucose": float(m_dose_food_glucose.group(2).replace(",", ".")),
+            "sensitivity": float(m_dose_food_glucose.group(3).replace(",", ".")) if m_dose_food_glucose.group(3) else None,
+        }
+    m_dose_food_auto = re.search(
+        r"^dose\s+alimento\s+(.+?)(?:\s+sens\s*=?\s*([0-9]+(?:[.,][0-9]+)?))?$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if m_dose_food_auto:
+        return {
+            "type": "dose_food_auto_glucose",
+            "food_query": m_dose_food_auto.group(1).strip(),
+            "sensitivity": float(m_dose_food_auto.group(2).replace(",", ".")) if m_dose_food_auto.group(2) else None,
+        }
+
     m_dose = re.search(
         r"dose\s+cho\s*=?\s*([0-9]+(?:[.,][0-9]+)?)\s+glicemia\s*=?\s*([0-9]+(?:[.,][0-9]+)?)(?:\s+sens\s*=?\s*([0-9]+(?:[.,][0-9]+)?))?",
         low,
@@ -556,6 +906,11 @@ def _help_text() -> str:
         "- registros (últimos CHO/insulina salvos)\n"
         "- dose cho 40 glicemia 180 [sens 0.10]\n"
         "- dose cho 10 [sens 0.10] (usa glicose atual)\n"
+        "- alimento banana\n"
+        "- registrar alimento banana\n"
+        "- registrar alimento arroz 120g\n"
+        "- dose alimento banana glicemia 180 [sens 0.10]\n"
+        "- dose alimento arroz 120g [sens 0.10]\n"
         "- registrar cho 30\n"
         "- registrar insulina 2.5 rapida\n"
         "- atualizar\n"
@@ -580,6 +935,7 @@ def main() -> int:
     offset_path = (config.base_dir / args.offset_path).resolve()
     meals_csv = (config.base_dir / args.manual_meals_csv).resolve()
     insulin_csv = (config.base_dir / args.manual_insulin_csv).resolve()
+    food_table = _load_food_table(config.base_dir, args.food_table_path)
 
     offset_state = _read_json(offset_path)
     next_offset = offset_state.get("next_offset")
@@ -587,6 +943,10 @@ def main() -> int:
         next_offset = None
 
     allowed_chat = str(args.allowed_chat_id).strip() if args.allowed_chat_id else ""
+    if food_table.get("status") == "ok":
+        print(f"Tabela de alimentos ativa: {food_table.get('path')}")
+    else:
+        print(f"Tabela de alimentos indisponível: {food_table.get('message')}")
     print("Telegram AI bot em execução (polling).")
     while True:
         try:
@@ -618,6 +978,59 @@ def main() -> int:
                         reply = _build_forecast_reply(config)
                     elif cmd["type"] == "records":
                         reply = _build_records_reply(meals_csv, insulin_csv)
+                    elif cmd["type"] == "food_lookup":
+                        if food_table.get("status") != "ok":
+                            reply = (
+                                f"Tabela de alimentos indisponível: {food_table.get('message')}.\n"
+                                "Defina FOOD_GI_TABLE_PATH no .env para CSV/JSON/PDF com alimentos e IG."
+                            )
+                        else:
+                            food_query, grams = _extract_amount_g(str(cmd["food_query"]))
+                            entry = _lookup_food(food_query, food_table)
+                            if entry is None:
+                                reply = f"Alimento não encontrado na tabela: {food_query}"
+                            else:
+                                cho_est = _estimate_carbs_from_entry(entry, grams)
+                                gi = entry.get("gi")
+                                cg = entry.get("glycemic_load")
+                                gi_factor = _gi_impact_factor(gi)
+                                qty_msg = f"{_fmt(grams,0)} g" if grams is not None else "porção padrão"
+                                reply = (
+                                    "Lookup alimento:\n"
+                                    f"- Nome: {entry.get('food_name')}\n"
+                                    f"- Quantidade: {qty_msg}\n"
+                                    f"- IG: {_fmt(gi,0)}\n"
+                                    f"- CG: {_fmt(cg,1)}\n"
+                                    f"- CHO estimado: {_fmt(cho_est,1)} g\n"
+                                    f"- Fator IG dose: {_fmt(gi_factor,2)}x"
+                                )
+                    elif cmd["type"] == "add_food":
+                        if food_table.get("status") != "ok":
+                            reply = (
+                                f"Tabela de alimentos indisponível: {food_table.get('message')}.\n"
+                                "Defina FOOD_GI_TABLE_PATH no .env para CSV/JSON/PDF com alimentos e IG."
+                            )
+                        else:
+                            food_query, grams = _extract_amount_g(str(cmd["food_query"]))
+                            entry = _lookup_food(food_query, food_table)
+                            if entry is None:
+                                reply = f"Alimento não encontrado na tabela: {food_query}"
+                            else:
+                                cho_est = _estimate_carbs_from_entry(entry, grams)
+                                if cho_est is None:
+                                    reply = (
+                                        f"Encontrei {entry.get('food_name')}, mas sem CHO na tabela para registrar.\n"
+                                        "Use registrar cho <gramas> ou adicione colunas de CHO na tabela."
+                                    )
+                                else:
+                                    now_iso = datetime.now().replace(microsecond=0).isoformat()
+                                    _append_manual_meal(meals_csv, now_iso, float(cho_est))
+                                    ok, detail = _run_pipeline_with_manual_inputs(config.base_dir, meals_csv, insulin_csv)
+                                    gi = entry.get("gi")
+                                    reply = (
+                                        f"Alimento registrado: {entry.get('food_name')} | CHO {_fmt(cho_est,1)} g | IG {_fmt(gi,0)}.\n"
+                                        f"{'OK' if ok else 'Falha'}: {detail}"
+                                    )
                     elif cmd["type"] == "dose":
                         state = _read_json(config.state_path)
                         if cmd.get("sensitivity") is not None:
@@ -641,6 +1054,104 @@ def main() -> int:
                             f"- PK ativo: {_fmt(dose['pk_active_u'],2)} U (aten. {_fmt(dose['pk_att']*100,0)}%)\n"
                             f"- Final limitada: {_fmt(dose['final_u'],2)} U"
                         )
+                    elif cmd["type"] == "dose_food":
+                        if food_table.get("status") != "ok":
+                            reply = (
+                                f"Tabela de alimentos indisponível: {food_table.get('message')}.\n"
+                                "Defina FOOD_GI_TABLE_PATH no .env para CSV/JSON/PDF com alimentos e IG."
+                            )
+                        else:
+                            state = _read_json(config.state_path)
+                            food_query, grams = _extract_amount_g(str(cmd["food_query"]))
+                            entry = _lookup_food(food_query, food_table)
+                            if entry is None:
+                                reply = f"Alimento não encontrado na tabela: {food_query}"
+                            else:
+                                cho_est = _estimate_carbs_from_entry(entry, grams)
+                                if cho_est is None:
+                                    reply = (
+                                        f"Encontrei {entry.get('food_name')}, mas sem CHO para calcular dose.\n"
+                                        "Use: dose cho <gramas> glicemia <valor>."
+                                    )
+                                else:
+                                    if cmd.get("sensitivity") is not None:
+                                        sensitivity = float(cmd["sensitivity"])
+                                    else:
+                                        scale = float((state.get("params") or {}).get("insulin_sensitivity_scale", 1.0) or 1.0)
+                                        adaptive_isf = 45.0 * scale
+                                        sensitivity = max(0.02, min(0.20, 3.4 / max(adaptive_isf, 1e-6)))
+                                    gi = entry.get("gi")
+                                    gi_factor = _gi_impact_factor(gi)
+                                    cho_effective = float(cho_est) * gi_factor
+                                    dose = _dose_formula(
+                                        glucose=float(cmd["glucose"]),
+                                        cho_g=cho_effective,
+                                        sensitivity_u_per_g=sensitivity,
+                                        pk_active_u=_compute_pk_active_from_state(state),
+                                    )
+                                    reply = (
+                                        "Dose por alimento (simulação, não clínica):\n"
+                                        f"- Alimento: {entry.get('food_name')}\n"
+                                        f"- CHO base: {_fmt(cho_est,1)} g\n"
+                                        f"- IG: {_fmt(gi,0)} | fator IG: {_fmt(gi_factor,2)}x\n"
+                                        f"- CHO efetivo: {_fmt(cho_effective,1)} g\n"
+                                        f"- Sensibilidade: {_fmt(sensitivity,3)} U/g\n"
+                                        f"- CHO dose: {_fmt(dose['cho_u'],2)} U\n"
+                                        f"- Correção: {_fmt(dose['correction_u'],2)} U\n"
+                                        f"- Bruta: {_fmt(dose['raw_u'],2)} U\n"
+                                        f"- PK ativo: {_fmt(dose['pk_active_u'],2)} U (aten. {_fmt(dose['pk_att']*100,0)}%)\n"
+                                        f"- Final limitada: {_fmt(dose['final_u'],2)} U"
+                                    )
+                    elif cmd["type"] == "dose_food_auto_glucose":
+                        if food_table.get("status") != "ok":
+                            reply = (
+                                f"Tabela de alimentos indisponível: {food_table.get('message')}.\n"
+                                "Defina FOOD_GI_TABLE_PATH no .env para CSV/JSON/PDF com alimentos e IG."
+                            )
+                        else:
+                            state = _read_json(config.state_path)
+                            food_query, grams = _extract_amount_g(str(cmd["food_query"]))
+                            entry = _lookup_food(food_query, food_table)
+                            if entry is None:
+                                reply = f"Alimento não encontrado na tabela: {food_query}"
+                            else:
+                                cho_est = _estimate_carbs_from_entry(entry, grams)
+                                if cho_est is None:
+                                    reply = (
+                                        f"Encontrei {entry.get('food_name')}, mas sem CHO para calcular dose.\n"
+                                        "Use: dose cho <gramas>."
+                                    )
+                                else:
+                                    current_glucose = float(state.get("latest_glucose_mg_dl", 140.0) or 140.0)
+                                    if cmd.get("sensitivity") is not None:
+                                        sensitivity = float(cmd["sensitivity"])
+                                    else:
+                                        scale = float((state.get("params") or {}).get("insulin_sensitivity_scale", 1.0) or 1.0)
+                                        adaptive_isf = 45.0 * scale
+                                        sensitivity = max(0.02, min(0.20, 3.4 / max(adaptive_isf, 1e-6)))
+                                    gi = entry.get("gi")
+                                    gi_factor = _gi_impact_factor(gi)
+                                    cho_effective = float(cho_est) * gi_factor
+                                    dose = _dose_formula(
+                                        glucose=current_glucose,
+                                        cho_g=cho_effective,
+                                        sensitivity_u_per_g=sensitivity,
+                                        pk_active_u=_compute_pk_active_from_state(state),
+                                    )
+                                    reply = (
+                                        "Dose por alimento (simulação, não clínica):\n"
+                                        f"- Alimento: {entry.get('food_name')}\n"
+                                        f"- Glicose atual: {_fmt(current_glucose,0)} mg/dL\n"
+                                        f"- CHO base: {_fmt(cho_est,1)} g\n"
+                                        f"- IG: {_fmt(gi,0)} | fator IG: {_fmt(gi_factor,2)}x\n"
+                                        f"- CHO efetivo: {_fmt(cho_effective,1)} g\n"
+                                        f"- Sensibilidade: {_fmt(sensitivity,3)} U/g\n"
+                                        f"- CHO dose: {_fmt(dose['cho_u'],2)} U\n"
+                                        f"- Correção: {_fmt(dose['correction_u'],2)} U\n"
+                                        f"- Bruta: {_fmt(dose['raw_u'],2)} U\n"
+                                        f"- PK ativo: {_fmt(dose['pk_active_u'],2)} U (aten. {_fmt(dose['pk_att']*100,0)}%)\n"
+                                        f"- Final limitada: {_fmt(dose['final_u'],2)} U"
+                                    )
                     elif cmd["type"] == "dose_auto_glucose":
                         state = _read_json(config.state_path)
                         current_glucose = float(state.get("latest_glucose_mg_dl", 140.0) or 140.0)

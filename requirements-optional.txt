@@ -1,3 +1,4 @@
 # Dependências opcionais
 # Necessário apenas para extract.py com LibreLinkUp
 pylibrelinkup
+pypdf>=4,<6
