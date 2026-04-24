@@ -11,8 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
  && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
-RUN pip install --upgrade pip && pip install -r requirements.txt
+COPY requirements.txt requirements-optional.txt ./
+RUN pip install --upgrade pip \
+ && pip install -r requirements.txt -r requirements-optional.txt
 
 COPY . .
 RUN mkdir -p /app/outputs /app/outputs/plots /tmp/matplotlib
