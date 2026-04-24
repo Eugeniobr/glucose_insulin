@@ -656,22 +656,42 @@ def _run_pipeline_with_manual_inputs(base_dir: Path, meals_csv: Path, insulin_cs
     env = os.environ.copy()
     env["MEALS_CSV_URL"] = str(meals_csv.resolve())
     env["INSULIN_CSV_URL"] = str(insulin_csv.resolve())
-    cmd = [sys.executable, "main.py", "once", "--skip-extract"]
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(base_dir),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=180,
-            check=False,
-        )
-        if proc.returncode != 0:
-            return False, (proc.stderr or proc.stdout or "").strip()[:700]
+
+    def _run(skip_extract: bool) -> tuple[bool, str]:
+        cmd = [sys.executable, "main.py", "once"]
+        if skip_extract:
+            cmd.append("--skip-extract")
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(base_dir),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+            )
+            if proc.returncode != 0:
+                return False, (proc.stderr or proc.stdout or "").strip()[:700]
+            return True, "ok"
+        except Exception as exc:
+            return False, str(exc)
+
+    force_skip_extract = os.getenv("BOT_FORCE_SKIP_EXTRACT", "").strip().lower() in {"1", "true", "yes", "on"}
+    if force_skip_extract:
+        ok, detail = _run(skip_extract=True)
+        if ok:
+            return True, "Pipeline atualizado (skip extract forçado)."
+        return False, detail
+
+    ok, detail = _run(skip_extract=False)
+    if ok:
         return True, "Pipeline atualizado."
-    except Exception as exc:
-        return False, str(exc)
+
+    ok_fallback, detail_fallback = _run(skip_extract=True)
+    if ok_fallback:
+        return True, "Pipeline atualizado sem extração nova (fallback)."
+    return False, f"{detail[:320]} | fallback --skip-extract: {detail_fallback[:320]}"
 
 
 def _build_metrics_reply(config) -> str:
