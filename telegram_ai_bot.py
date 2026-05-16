@@ -13,6 +13,17 @@ from typing import Any
 from urllib import error, parse, request
 
 from config import load_config
+from dose_engine import DoseLimits, compute_dose, simulate_scenarios
+
+try:
+    import torch  # type: ignore
+    from peft import PeftModel  # type: ignore
+    from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
+except Exception:
+    torch = None
+    PeftModel = None
+    AutoModelForCausalLM = None
+    AutoTokenizer = None
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 try:
@@ -477,6 +488,17 @@ def _dashboard_context(config) -> str:
     )
 
 
+def _dose_limits_from_env() -> DoseLimits:
+    return DoseLimits(
+        target_mg_dl=float(os.getenv("DOSE_TARGET_MGDL", "110") or 110),
+        correction_divisor_mg_dl_per_u=float(os.getenv("DOSE_CORRECTION_DIVISOR_MGDL_PER_U", "30") or 30),
+        max_bolus_u=float(os.getenv("DOSE_MAX_BOLUS_U", "4.0") or 4.0),
+        max_iob_reduction=float(os.getenv("DOSE_MAX_IOB_REDUCTION", "0.65") or 0.65),
+        min_glucose_block_mg_dl=float(os.getenv("DOSE_MIN_GLUCOSE_BLOCK_MGDL", "90") or 90),
+        low_glucose_reduction_mg_dl=float(os.getenv("DOSE_LOW_GLUCOSE_REDUCTION_MGDL", "110") or 110),
+    )
+
+
 def _call_deepseek(api_key: str, model: str, user_text: str, context: str) -> str:
     endpoint = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/") + "/chat/completions"
     payload = {
@@ -521,9 +543,12 @@ def _call_deepseek(api_key: str, model: str, user_text: str, context: str) -> st
 def _call_ollama(model: str, user_text: str, context: str) -> str:
     base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
     endpoint = f"{base_url}/api/chat"
+    num_predict = int(os.getenv("OLLAMA_NUM_PREDICT", "80") or 80)
+    temperature = float(os.getenv("OLLAMA_TEMPERATURE", "0.2") or 0.2)
     payload = {
         "model": model,
         "stream": False,
+        "options": {"num_predict": max(32, min(num_predict, 512)), "temperature": max(0.0, min(temperature, 1.0))},
         "messages": [
             {
                 "role": "system",
@@ -543,7 +568,7 @@ def _call_ollama(model: str, user_text: str, context: str) -> str:
         headers={"Content-Type": "application/json"},
     )
     try:
-        with request.urlopen(req, timeout=60) as resp:
+        with request.urlopen(req, timeout=180) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         message = data.get("message") or {}
         content = str(message.get("content") or "").strip()
@@ -553,6 +578,65 @@ def _call_ollama(model: str, user_text: str, context: str) -> str:
         return _sanitize_text(f"Falha Ollama HTTP {exc.code}: {raw[:600]}")
     except Exception as exc:
         return _sanitize_text(f"Falha Ollama: {exc}")
+
+
+_GEMMA_LORA_RUNTIME: dict[str, Any] = {}
+
+
+def _load_gemma_lora_runtime(base_model: str, adapter_path: str) -> dict[str, Any]:
+    cache_key = f"{base_model}::{adapter_path}"
+    existing = _GEMMA_LORA_RUNTIME.get(cache_key)
+    if isinstance(existing, dict):
+        return existing
+    if AutoTokenizer is None or AutoModelForCausalLM is None or PeftModel is None:
+        raise RuntimeError("Dependências de inferência local ausentes (transformers/peft/torch).")
+    tok = AutoTokenizer.from_pretrained(base_model)
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    base = AutoModelForCausalLM.from_pretrained(
+        base_model,
+        torch_dtype=torch.bfloat16 if (torch is not None and torch.cuda.is_available()) else torch.float32,  # type: ignore[arg-type]
+        device_map="auto",
+    )
+    model = PeftModel.from_pretrained(base, adapter_path)
+    runtime = {"tokenizer": tok, "model": model}
+    _GEMMA_LORA_RUNTIME[cache_key] = runtime
+    return runtime
+
+
+def _call_gemma_lora(base_model: str, adapter_path: str, user_text: str, context: str) -> str:
+    runtime = _load_gemma_lora_runtime(base_model, adapter_path)
+    tok = runtime["tokenizer"]
+    model = runtime["model"]
+    max_new_tokens = int(os.getenv("GEMMA_LORA_MAX_NEW_TOKENS", "120") or 120)
+    temperature = float(os.getenv("GEMMA_LORA_TEMPERATURE", "0.2") or 0.2)
+
+    prompt = (
+        "<start_of_turn>user\n"
+        "Você é assistente técnico do projeto de glicose-insulina. "
+        "Responda em português, objetivo e prático. "
+        "Quando falar de dose, trate como simulação/apoio analítico e não orientação clínica.\n\n"
+        f"Contexto:\n{context}\n\nPergunta:\n{user_text}\n"
+        "<end_of_turn>\n"
+        "<start_of_turn>model\n"
+    )
+    inputs = tok(prompt, return_tensors="pt")
+    if torch is not None:
+        device = next(model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+    with torch.no_grad():  # type: ignore[union-attr]
+        out = model.generate(
+            **inputs,
+            max_new_tokens=max(32, min(max_new_tokens, 512)),
+            do_sample=temperature > 0.0,
+            temperature=max(0.0, min(temperature, 1.0)),
+            top_p=0.95,
+            pad_token_id=tok.eos_token_id,
+            eos_token_id=tok.eos_token_id,
+        )
+    generated = out[0][inputs["input_ids"].shape[-1] :]
+    text = tok.decode(generated, skip_special_tokens=True).strip()
+    return _sanitize_text(text or "Sem conteúdo retornado pelo Gemma LoRA.")
 
 
 def _call_llm(
@@ -570,6 +654,10 @@ def _call_llm(
         return _call_deepseek(deepseek_key, deepseek_model, user_text, context)
     if mode == "ollama":
         return _call_ollama(ollama_model, user_text, context)
+    if mode == "gemma_lora":
+        base_model = _env("GEMMA_LORA_BASE_MODEL", "google/gemma-2-2b-it")
+        adapter_path = _env("GEMMA_LORA_ADAPTER_PATH", "outputs/gemma_lora")
+        return _call_gemma_lora(base_model, adapter_path, user_text, context)
 
     # auto: tenta DeepSeek primeiro, fallback para Ollama.
     if deepseek_key:
@@ -579,20 +667,23 @@ def _call_llm(
     return _call_ollama(ollama_model, user_text, context)
 
 
-def _dose_formula(glucose: float, cho_g: float, sensitivity_u_per_g: float, pk_active_u: float) -> dict[str, float]:
-    cho_u = max(0.0, sensitivity_u_per_g * max(0.0, cho_g))
-    correction = (glucose - 140.0) / 30.0
-    raw = max(0.0, cho_u + correction)
-    pk_att = max(0.0, min(0.65, pk_active_u / 6.0))
-    post_pk = raw * (1.0 - pk_att)
-    final = min(4.0, max(0.0, post_pk))
+def _dose_formula(glucose: float, cho_g: float, sensitivity_u_per_g: float, pk_active_u: float) -> dict[str, Any]:
+    result = compute_dose(
+        glucose_mg_dl=float(glucose),
+        cho_g=float(cho_g),
+        sensitivity_u_per_g=float(sensitivity_u_per_g),
+        pk_active_u=float(pk_active_u),
+        limits=_dose_limits_from_env(),
+    ).to_dict()
     return {
-        "cho_u": cho_u,
-        "correction_u": correction,
-        "raw_u": raw,
-        "pk_active_u": pk_active_u,
-        "pk_att": pk_att,
-        "final_u": final,
+        "cho_u": float(result["cho_u"]),
+        "correction_u": float(result["correction_u"]),
+        "raw_u": float(result["raw_u"]),
+        "pk_active_u": float(result["pk_active_u"]),
+        "pk_att": float(result["pk_att"]),
+        "final_u": float(result["final_u"]),
+        "blocked": bool(result.get("blocked", False)),
+        "reasons": list(result.get("reasons") or []),
     }
 
 
@@ -904,6 +995,29 @@ def _parse_command(text: str) -> dict[str, Any]:
             "cho": float(m_dose_auto.group(1).replace(",", ".")),
             "sensitivity": float(m_dose_auto.group(2).replace(",", ".")) if m_dose_auto.group(2) else None,
         }
+    m_sim_dose = re.search(
+        r"simular\s+dose\s+cho\s*=?\s*([0-9]+(?:[.,][0-9]+)?)\s+glicemia\s*=?\s*([0-9]+(?:[.,][0-9]+)?)(?:\s+sens\s*=?\s*([0-9]+(?:[.,][0-9]+)?))?",
+        low,
+    )
+    if m_sim_dose:
+        return {
+            "type": "simulate_dose",
+            "cho": float(m_sim_dose.group(1).replace(",", ".")),
+            "glucose": float(m_sim_dose.group(2).replace(",", ".")),
+            "sensitivity": float(m_sim_dose.group(3).replace(",", ".")) if m_sim_dose.group(3) else None,
+        }
+    m_sim_food = re.search(
+        r"^simular\s+dose\s+alimento\s+(.+?)(?:\s+glicemia\s*=?\s*([0-9]+(?:[.,][0-9]+)?))?(?:\s+sens\s*=?\s*([0-9]+(?:[.,][0-9]+)?))?$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if m_sim_food:
+        return {
+            "type": "simulate_food_dose",
+            "food_query": m_sim_food.group(1).strip(),
+            "glucose": float(m_sim_food.group(2).replace(",", ".")) if m_sim_food.group(2) else None,
+            "sensitivity": float(m_sim_food.group(3).replace(",", ".")) if m_sim_food.group(3) else None,
+        }
 
     m_cho = re.search(r"(?:cho|carbo)\s+([0-9]+(?:[.,][0-9]+)?)", low)
     if m_cho and ("registr" in low or "add" in low or low.startswith("cho ")):
@@ -931,13 +1045,15 @@ def _help_text() -> str:
         "- registrar alimento arroz 120g\n"
         "- dose alimento banana glicemia 180 [sens 0.10]\n"
         "- dose alimento arroz 120g [sens 0.10]\n"
+        "- simular dose cho 40 glicemia 180 [sens 0.10]\n"
+        "- simular dose alimento arroz 120g [glicemia 180] [sens 0.10]\n"
         "- registrar cho 30\n"
         "- registrar insulina 2.5 rapida\n"
         "- atualizar\n"
         "- gráfico (pipeline)\n"
         "- gráfico erro (delta projeção-observado)\n"
         "- gráfico ts (reconstrução TS dinâmica)\n"
-        "- ou pergunte livremente para o DeepSeek."
+        "- ou pergunte livremente para o Gemma/DeepSeek."
     )
 
 
@@ -1072,7 +1188,9 @@ def main() -> int:
                             f"- Correção: {_fmt(dose['correction_u'],2)} U\n"
                             f"- Bruta: {_fmt(dose['raw_u'],2)} U\n"
                             f"- PK ativo: {_fmt(dose['pk_active_u'],2)} U (aten. {_fmt(dose['pk_att']*100,0)}%)\n"
-                            f"- Final limitada: {_fmt(dose['final_u'],2)} U"
+                            f"- Final limitada: {_fmt(dose['final_u'],2)} U\n"
+                            f"- Bloqueio segurança: {'sim' if dose.get('blocked') else 'não'}\n"
+                            f"- Guardrails: {', '.join(dose.get('reasons') or ['none'])}"
                         )
                     elif cmd["type"] == "dose_food":
                         if food_table.get("status") != "ok":
@@ -1120,7 +1238,9 @@ def main() -> int:
                                         f"- Correção: {_fmt(dose['correction_u'],2)} U\n"
                                         f"- Bruta: {_fmt(dose['raw_u'],2)} U\n"
                                         f"- PK ativo: {_fmt(dose['pk_active_u'],2)} U (aten. {_fmt(dose['pk_att']*100,0)}%)\n"
-                                        f"- Final limitada: {_fmt(dose['final_u'],2)} U"
+                                        f"- Final limitada: {_fmt(dose['final_u'],2)} U\n"
+                                        f"- Bloqueio segurança: {'sim' if dose.get('blocked') else 'não'}\n"
+                                        f"- Guardrails: {', '.join(dose.get('reasons') or ['none'])}"
                                     )
                     elif cmd["type"] == "dose_food_auto_glucose":
                         if food_table.get("status") != "ok":
@@ -1170,7 +1290,9 @@ def main() -> int:
                                         f"- Correção: {_fmt(dose['correction_u'],2)} U\n"
                                         f"- Bruta: {_fmt(dose['raw_u'],2)} U\n"
                                         f"- PK ativo: {_fmt(dose['pk_active_u'],2)} U (aten. {_fmt(dose['pk_att']*100,0)}%)\n"
-                                        f"- Final limitada: {_fmt(dose['final_u'],2)} U"
+                                        f"- Final limitada: {_fmt(dose['final_u'],2)} U\n"
+                                        f"- Bloqueio segurança: {'sim' if dose.get('blocked') else 'não'}\n"
+                                        f"- Guardrails: {', '.join(dose.get('reasons') or ['none'])}"
                                     )
                     elif cmd["type"] == "dose_auto_glucose":
                         state = _read_json(config.state_path)
@@ -1195,8 +1317,125 @@ def main() -> int:
                             f"- Correção: {_fmt(dose['correction_u'],2)} U\n"
                             f"- Bruta: {_fmt(dose['raw_u'],2)} U\n"
                             f"- PK ativo: {_fmt(dose['pk_active_u'],2)} U (aten. {_fmt(dose['pk_att']*100,0)}%)\n"
-                            f"- Final limitada: {_fmt(dose['final_u'],2)} U"
+                            f"- Final limitada: {_fmt(dose['final_u'],2)} U\n"
+                            f"- Bloqueio segurança: {'sim' if dose.get('blocked') else 'não'}\n"
+                            f"- Guardrails: {', '.join(dose.get('reasons') or ['none'])}"
                         )
+                    elif cmd["type"] == "simulate_dose":
+                        state = _read_json(config.state_path)
+                        if cmd.get("sensitivity") is not None:
+                            sensitivity = float(cmd["sensitivity"])
+                        else:
+                            scale = float((state.get("params") or {}).get("insulin_sensitivity_scale", 1.0) or 1.0)
+                            adaptive_isf = 45.0 * scale
+                            sensitivity = max(0.02, min(0.20, 3.4 / max(adaptive_isf, 1e-6)))
+                        pk_active_u = _compute_pk_active_from_state(state)
+                        sims = simulate_scenarios(
+                            glucose_mg_dl=float(cmd["glucose"]),
+                            cho_effective_g=float(cmd["cho"]),
+                            sensitivity_u_per_g=sensitivity,
+                            pk_active_u=pk_active_u,
+                            limits=_dose_limits_from_env(),
+                        )
+                        sim_context = (
+                            _dashboard_context(config)
+                            + "\n\nSIMULACAO_DETERMINISTICA_JSON:\n"
+                            + json.dumps(sims, ensure_ascii=False)
+                        )
+                        llm_reply = _call_llm(
+                            provider=llm_provider,
+                            deepseek_key=deepseek_key,
+                            deepseek_model=deepseek_model,
+                            ollama_model=ollama_model,
+                            user_text=(
+                                "Analise os cenários conservative/base/aggressive e responda em português com: "
+                                "resumo, riscos, cenário preferido e alertas. Apoio analítico, não clínico."
+                            ),
+                            context=sim_context,
+                        )
+                        base = sims.get("base") or {}
+                        reply = (
+                            "Simulação de dose (U):\n"
+                            f"- Base final: {_fmt(base.get('final_u'),2)} U\n"
+                            f"- Conservadora: {_fmt((sims.get('conservative') or {}).get('final_u'),2)} U\n"
+                            f"- Agressiva: {_fmt((sims.get('aggressive') or {}).get('final_u'),2)} U\n"
+                            f"- IOB ativo: {_fmt(pk_active_u,2)} U\n\n"
+                            "Análise Gemma:\n"
+                            f"{llm_reply}"
+                        )
+                    elif cmd["type"] == "simulate_food_dose":
+                        if food_table.get("status") != "ok":
+                            reply = (
+                                f"Tabela de alimentos indisponível: {food_table.get('message')}.\n"
+                                "Defina FOOD_GI_TABLE_PATH no .env para CSV/JSON/PDF com alimentos e IG."
+                            )
+                        else:
+                            state = _read_json(config.state_path)
+                            food_query, grams = _extract_amount_g(str(cmd["food_query"]))
+                            entry = _lookup_food(food_query, food_table)
+                            if entry is None:
+                                reply = f"Alimento não encontrado na tabela: {food_query}"
+                            else:
+                                cho_est = _estimate_carbs_from_entry(entry, grams)
+                                if cho_est is None:
+                                    reply = f"Encontrei {entry.get('food_name')}, mas sem CHO para simular dose."
+                                else:
+                                    current_glucose = float(
+                                        cmd["glucose"] if cmd.get("glucose") is not None else state.get("latest_glucose_mg_dl", 140.0)
+                                    )
+                                    if cmd.get("sensitivity") is not None:
+                                        sensitivity = float(cmd["sensitivity"])
+                                    else:
+                                        scale = float((state.get("params") or {}).get("insulin_sensitivity_scale", 1.0) or 1.0)
+                                        adaptive_isf = 45.0 * scale
+                                        sensitivity = max(0.02, min(0.20, 3.4 / max(adaptive_isf, 1e-6)))
+                                    gi = entry.get("gi")
+                                    cho_effective = float(cho_est) * _gi_impact_factor(gi)
+                                    pk_active_u = _compute_pk_active_from_state(state)
+                                    sims = simulate_scenarios(
+                                        glucose_mg_dl=current_glucose,
+                                        cho_effective_g=cho_effective,
+                                        sensitivity_u_per_g=sensitivity,
+                                        pk_active_u=pk_active_u,
+                                        limits=_dose_limits_from_env(),
+                                    )
+                                    sim_context = (
+                                        _dashboard_context(config)
+                                        + "\n\nALIMENTO:\n"
+                                        + json.dumps(
+                                            {
+                                                "nome": entry.get("food_name"),
+                                                "gramas": grams,
+                                                "ig": gi,
+                                                "cho_base_g": cho_est,
+                                                "cho_efetivo_g": cho_effective,
+                                            },
+                                            ensure_ascii=False,
+                                        )
+                                        + "\n\nSIMULACAO_DETERMINISTICA_JSON:\n"
+                                        + json.dumps(sims, ensure_ascii=False)
+                                    )
+                                    llm_reply = _call_llm(
+                                        provider=llm_provider,
+                                        deepseek_key=deepseek_key,
+                                        deepseek_model=deepseek_model,
+                                        ollama_model=ollama_model,
+                                        user_text=(
+                                            "Analise os cenários conservative/base/aggressive e responda em português com: "
+                                            "resumo, riscos, cenário preferido e alertas. Apoio analítico, não clínico."
+                                        ),
+                                        context=sim_context,
+                                    )
+                                    base = sims.get("base") or {}
+                                    reply = (
+                                        f"Simulação por alimento: {entry.get('food_name')}\n"
+                                        f"- Dose base: {_fmt(base.get('final_u'),2)} U\n"
+                                        f"- Conservadora: {_fmt((sims.get('conservative') or {}).get('final_u'),2)} U\n"
+                                        f"- Agressiva: {_fmt((sims.get('aggressive') or {}).get('final_u'),2)} U\n"
+                                        f"- IOB ativo: {_fmt(pk_active_u,2)} U\n\n"
+                                        "Análise Gemma:\n"
+                                        f"{llm_reply}"
+                                    )
                     elif cmd["type"] == "add_cho":
                         now_iso = datetime.now().replace(microsecond=0).isoformat()
                         _append_manual_meal(meals_csv, now_iso, float(cmd["cho"]))

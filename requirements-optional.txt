@@ -2,3 +2,12 @@
 # Necessário apenas para extract.py com LibreLinkUp
 pylibrelinkup
 pypdf>=4,<6
+
+# Fine-tuning (Gemma LoRA/QLoRA)
+torch>=2.3
+transformers>=4.46
+datasets>=2.20
+peft>=0.12
+trl>=0.10
+accelerate>=0.34
+bitsandbytes>=0.43
