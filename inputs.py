@@ -1,11 +1,13 @@
 import csv
 import io
+import sys
 import re
 import unicodedata
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable
+from urllib.error import URLError
 from urllib.request import urlopen
 
 
@@ -98,10 +100,14 @@ def _normalize_header(value: str) -> str:
 def _read_source_text(source: str) -> str:
     if not source:
         return ""
-    if source.startswith("http://") or source.startswith("https://"):
-        with urlopen(source) as response:
-            return response.read().decode("utf-8-sig")
-    return Path(source).read_text(encoding="utf-8-sig")
+    try:
+        if source.startswith("http://") or source.startswith("https://"):
+            with urlopen(source, timeout=20) as response:
+                return response.read().decode("utf-8-sig")
+        return Path(source).read_text(encoding="utf-8-sig")
+    except (URLError, OSError, TimeoutError, UnicodeDecodeError) as exc:
+        print(f"[inputs] Aviso: não foi possível carregar origem '{source}': {exc}", file=sys.stderr)
+        return ""
 
 
 def _parse_csv_rows(source: str) -> Iterable[dict]:
@@ -109,7 +115,10 @@ def _parse_csv_rows(source: str) -> Iterable[dict]:
     if not text.strip():
         return []
     sample = text[:4096]
-    dialect = csv.Sniffer().sniff(sample, delimiters=",;")
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;")
+    except csv.Error:
+        dialect = csv.get_dialect("excel")
     reader = csv.DictReader(io.StringIO(text), dialect=dialect)
     return list(reader)
 

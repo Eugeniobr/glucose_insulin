@@ -45,6 +45,7 @@ services:
     volumes:
       - outputs_data:/app/outputs
       - ./dados_glicose_final.json:/app/dados_glicose_final.json
+      - ./metabolic_twin/artifacts:/app/metabolic_twin/artifacts
     depends_on:
       - pipeline
     restart: unless-stopped

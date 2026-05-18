@@ -842,6 +842,76 @@ def _build_records_reply(meals_csv: Path, insulin_csv: Path) -> str:
     )
 
 
+def _run_twin_snapshot(base_dir: Path) -> tuple[bool, str]:
+    twin_csv = _env("TWIN_DATA_CSV", "EugênioSilva Rezende_glucose_4-19-2026.csv")
+    twin_artifacts = _env("TWIN_ARTIFACTS_DIR", "metabolic_twin/artifacts")
+    twin_output = _env("TWIN_SNAPSHOT_PATH", "outputs/twin_simulation.json")
+    cmd = [
+        sys.executable,
+        "metabolic_twin/src/run_inference_snapshot.py",
+        "--csv",
+        twin_csv,
+        "--artifacts",
+        twin_artifacts,
+        "--output",
+        twin_output,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(base_dir),
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return False, (proc.stderr or proc.stdout or "").strip()[:900]
+        return True, (proc.stdout or "ok").strip()[:500]
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _build_twin_reply(config) -> str:
+    snapshot_rel = _env("TWIN_SNAPSHOT_PATH", "outputs/twin_simulation.json")
+    path = (config.base_dir / snapshot_rel).resolve()
+    if not path.exists():
+        return (
+            "Snapshot do digital twin não encontrado.\n"
+            "Use: twin atualizar"
+        )
+    payload = _read_json(path)
+    records = payload.get("records") or []
+    if not records:
+        return "Snapshot do digital twin vazio. Use: twin atualizar"
+
+    r = records[0]
+    hz = r.get("horizons_minutes") or [30, 60, 120]
+    base = r.get("baseline") or []
+    cf = r.get("counterfactual") or {}
+    b_up = cf.get("bolus_x_up") or []
+    b_down = cf.get("bolus_x_down") or []
+    c_up = cf.get("carbs_x_up") or []
+    c_down = cf.get("carbs_x_down") or []
+
+    lines = [
+        "Digital Twin (experimental, não clínico):",
+        f"- patient_id: {r.get('patient_id')}",
+        f"- timestamp: {r.get('timestamp')}",
+    ]
+    for i, h in enumerate(hz):
+        base_v = base[i] if i < len(base) else None
+        bup_v = b_up[i] if i < len(b_up) else None
+        bdn_v = b_down[i] if i < len(b_down) else None
+        cup_v = c_up[i] if i < len(c_up) else None
+        cdn_v = c_down[i] if i < len(c_down) else None
+        lines.append(
+            f"- h={h}m | base={_fmt(base_v,2)} | bolus↑={_fmt(bup_v,2)} | bolus↓={_fmt(bdn_v,2)} | carbs↑={_fmt(cup_v,2)} | carbs↓={_fmt(cdn_v,2)}"
+        )
+    lines.append("- Disclaimer: simulação de pesquisa, sem recomendação médica.")
+    return "\n".join(lines)
+
+
 def _plot_pipeline_png(config) -> Path:
     path = (config.base_dir / "outputs/plots/latest_comparison.png").resolve()
     if not path.exists():
@@ -933,6 +1003,10 @@ def _parse_command(text: str) -> dict[str, Any]:
         return {"type": "forecast"}
     if low in {"registros", "registro", "logs", "historico", "histórico"}:
         return {"type": "records"}
+    if low in {"twin", "digital twin"}:
+        return {"type": "twin"}
+    if low in {"twin atualizar", "atualizar twin", "digital twin atualizar"}:
+        return {"type": "twin_update"}
     if low in {"atualizar", "update"}:
         return {"type": "update"}
     if low in {"grafico", "gráfico", "plot", "grafico pipeline", "gráfico pipeline", "plot pipeline"}:
@@ -1038,6 +1112,8 @@ def _help_text() -> str:
         "- métricas\n"
         "- forecast\n"
         "- registros (últimos CHO/insulina salvos)\n"
+        "- twin (último snapshot do digital twin)\n"
+        "- twin atualizar (recalcula snapshot)\n"
         "- dose cho 40 glicemia 180 [sens 0.10]\n"
         "- dose cho 10 [sens 0.10] (usa glicose atual)\n"
         "- alimento banana\n"
@@ -1114,6 +1190,14 @@ def main() -> int:
                         reply = _build_forecast_reply(config)
                     elif cmd["type"] == "records":
                         reply = _build_records_reply(meals_csv, insulin_csv)
+                    elif cmd["type"] == "twin":
+                        reply = _build_twin_reply(config)
+                    elif cmd["type"] == "twin_update":
+                        ok, detail = _run_twin_snapshot(config.base_dir)
+                        if ok:
+                            reply = "Snapshot do digital twin atualizado.\n" + _build_twin_reply(config)
+                        else:
+                            reply = f"Falha ao atualizar digital twin: {detail}"
                     elif cmd["type"] == "food_lookup":
                         if food_table.get("status") != "ok":
                             reply = (

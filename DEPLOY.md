@@ -59,14 +59,36 @@ LLM_PROVIDER=auto
 - `gráfico`
 - `gráfico erro`
 - `gráfico ts`
+- `twin` (último snapshot do digital twin experimental)
+- `twin atualizar` (recalcula snapshot do digital twin)
 
-## 6. Atualização
+## 6. Digital Twin (experimental)
+Pré-requisitos:
+- `metabolic_twin/artifacts/best_model.pt`
+- `metabolic_twin/artifacts/metadata.json`
+
+Variáveis no `.env`:
+```env
+TWIN_DATA_CSV=EugênioSilva Rezende_glucose_4-19-2026.csv
+TWIN_ARTIFACTS_DIR=metabolic_twin/artifacts
+TWIN_SNAPSHOT_PATH=outputs/twin_simulation.json
+```
+
+Gerar snapshot manual:
+```bash
+docker compose exec telegram_bot python3 metabolic_twin/src/run_inference_snapshot.py \
+  --csv "${TWIN_DATA_CSV}" \
+  --artifacts "${TWIN_ARTIFACTS_DIR}" \
+  --output "${TWIN_SNAPSHOT_PATH}"
+```
+
+## 7. Atualização
 ```bash
 git pull
 docker compose up -d --build
 ```
 
-## 7. Parar
+## 8. Parar
 ```bash
 docker compose down
 ```

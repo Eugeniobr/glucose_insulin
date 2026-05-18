@@ -1,0 +1,323 @@
+{
+  "feature_cols": [
+    "glucose",
+    "bolus",
+    "basal",
+    "carbs",
+    "hour_sin",
+    "hour_cos",
+    "dow",
+    "glucose_lag_1",
+    "glucose_lag_3",
+    "glucose_lag_6",
+    "bolus_sum_30m",
+    "bolus_sum_60m",
+    "carbs_sum_30m",
+    "carbs_sum_60m",
+    "basal_mean_30m",
+    "mins_since_meal",
+    "mins_since_bolus"
+  ],
+  "lookback_steps": 48,
+  "horizon_steps": [
+    6,
+    12,
+    24
+  ],
+  "horizons_minutes": [
+    30,
+    60,
+    120
+  ],
+  "model_type": "gru",
+  "hidden_dim": 64,
+  "num_layers": 2,
+  "norms": {
+    "195fc7df-711c-4b4f-9669-a072d5fec943::glucose": {
+      "mean": 83.86615143369175,
+      "std": 49.36527351305296
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::bolus": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::basal": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::carbs": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::hour_sin": {
+      "mean": -0.4465463331746023,
+      "std": 0.4793002525670798
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::hour_cos": {
+      "mean": 0.14832982145576795,
+      "std": 0.7437846428842619
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::dow": {
+      "mean": 5.183333333333334,
+      "std": 0.3880188902848379
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::glucose_lag_1": {
+      "mean": 82.9290994623656,
+      "std": 49.34738377489595
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::glucose_lag_3": {
+      "mean": 81.07078853046595,
+      "std": 49.28582032094366
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::glucose_lag_6": {
+      "mean": 78.32280465949822,
+      "std": 49.13169997465189
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::bolus_sum_30m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::bolus_sum_60m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::carbs_sum_30m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::carbs_sum_60m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::basal_mean_30m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::mins_since_meal": {
+      "mean": 1440.0,
+      "std": 1.0
+    },
+    "195fc7df-711c-4b4f-9669-a072d5fec943::mins_since_bolus": {
+      "mean": 1440.0,
+      "std": 1.0
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::glucose": {
+      "mean": 155.69879190627358,
+      "std": 60.06966157531157
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::bolus": {
+      "mean": 9.426329308814403e-05,
+      "std": 0.024109873246647703
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::basal": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::carbs": {
+      "mean": 0.0004713164654407202,
+      "std": 0.12054936623323853
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::hour_sin": {
+      "mean": 1.1983918052001186e-06,
+      "std": 0.7070902096836637
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::hour_cos": {
+      "mean": -5.492151888532791e-05,
+      "std": 0.7071289045766758
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::dow": {
+      "mean": 3.005789337250497,
+      "std": 2.0014423740669787
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::glucose_lag_1": {
+      "mean": 155.6959945183108,
+      "std": 60.06862024835739
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::glucose_lag_3": {
+      "mean": 155.69037718797065,
+      "std": 60.06646159146258
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::glucose_lag_6": {
+      "mean": 155.68189480642408,
+      "std": 60.06303176509146
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::bolus_sum_30m": {
+      "mean": 0.0005655797585288643,
+      "std": 0.05905463028984115
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::bolus_sum_60m": {
+      "mean": 0.0011311595170577285,
+      "std": 0.08351202878261069
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::carbs_sum_30m": {
+      "mean": 0.002827898792644321,
+      "std": 0.2952731514492058
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::carbs_sum_60m": {
+      "mean": 0.005655797585288642,
+      "std": 0.41756014391305346
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::basal_mean_30m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::mins_since_meal": {
+      "mean": 1436.730948995703,
+      "std": 55.97388050834986
+    },
+    "8f0519c4-047c-4dd0-be0b-f22e10e2dfa2::mins_since_bolus": {
+      "mean": 1436.730948995703,
+      "std": 55.97388050834986
+    },
+    "JGGW093-T0929::glucose": {
+      "mean": 139.94221533937147,
+      "std": 53.98811989412295
+    },
+    "JGGW093-T0929::bolus": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JGGW093-T0929::basal": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JGGW093-T0929::carbs": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JGGW093-T0929::hour_sin": {
+      "mean": 7.056504838953805e-06,
+      "std": 0.7071644634060423
+    },
+    "JGGW093-T0929::hour_cos": {
+      "mean": -0.00014051080314436392,
+      "std": 0.7070656735527545
+    },
+    "JGGW093-T0929::dow": {
+      "mean": 2.9933830775728567,
+      "std": 1.9950435688205552
+    },
+    "JGGW093-T0929::glucose_lag_1": {
+      "mean": 139.94223074873884,
+      "std": 53.98811753346623
+    },
+    "JGGW093-T0929::glucose_lag_3": {
+      "mean": 139.94227259917972,
+      "std": 53.98811102833127
+    },
+    "JGGW093-T0929::glucose_lag_6": {
+      "mean": 139.94236295410647,
+      "std": 53.98809665088577
+    },
+    "JGGW093-T0929::bolus_sum_30m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JGGW093-T0929::bolus_sum_60m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JGGW093-T0929::carbs_sum_30m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JGGW093-T0929::carbs_sum_60m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JGGW093-T0929::basal_mean_30m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JGGW093-T0929::mins_since_meal": {
+      "mean": 1440.0,
+      "std": 1.0
+    },
+    "JGGW093-T0929::mins_since_bolus": {
+      "mean": 1440.0,
+      "std": 1.0
+    },
+    "JQGC080-K2179::glucose": {
+      "mean": 139.80875249112302,
+      "std": 54.96424662782667
+    },
+    "JQGC080-K2179::bolus": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JQGC080-K2179::basal": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JQGC080-K2179::carbs": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JQGC080-K2179::hour_sin": {
+      "mean": 0.00031416462622599404,
+      "std": 0.7071920612814725
+    },
+    "JQGC080-K2179::hour_cos": {
+      "mean": 0.000677583757585014,
+      "std": 0.7070276679124432
+    },
+    "JQGC080-K2179::dow": {
+      "mean": 2.999256602300816,
+      "std": 2.0066886114806377
+    },
+    "JQGC080-K2179::glucose_lag_1": {
+      "mean": 139.8077630449462,
+      "std": 54.96580500584531
+    },
+    "JQGC080-K2179::glucose_lag_3": {
+      "mean": 139.80568415752168,
+      "std": 54.96897676548575
+    },
+    "JQGC080-K2179::glucose_lag_6": {
+      "mean": 139.8023158387075,
+      "std": 54.973839238301416
+    },
+    "JQGC080-K2179::bolus_sum_30m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JQGC080-K2179::bolus_sum_60m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JQGC080-K2179::carbs_sum_30m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JQGC080-K2179::carbs_sum_60m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JQGC080-K2179::basal_mean_30m": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "JQGC080-K2179::mins_since_meal": {
+      "mean": 1440.0,
+      "std": 1.0
+    },
+    "JQGC080-K2179::mins_since_bolus": {
+      "mean": 1440.0,
+      "std": 1.0
+    }
+  },
+  "test_metrics": {
+    "mae": 0.1613621860742569,
+    "rmse": 0.34904652045821194,
+    "mae_h": [
+      0.07459692656993866,
+      0.14198186993598938,
+      0.26750779151916504
+    ],
+    "rmse_h": [
+      0.1745135337114334,
+      0.30455997586250305,
+      0.49222826957702637
+    ]
+  }
+}
